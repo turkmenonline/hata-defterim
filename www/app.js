@@ -15,10 +15,13 @@
 
   var STORAGE_KEY = "hata_defterim_questions_v1";
   var PHOTOS_DIR = "photos";
+  var EMPTY_TOPIC_KEY = "__konusuz__";
+  var ALL_TOPICS_KEY = "__all__";
 
   var allQuestions = [];
   var photoSrcCache = {}; // filename -> resolved webview src
-  var selectedSubject = "all";
+  var nav = { subject: null, topicKey: null };
+  var historyDepth = 0;
   var searchTerm = "";
   var editingId = null;
   var pendingPhotoFilename = null;
@@ -51,6 +54,37 @@
   }
   function uid() {
     return "q_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+  }
+
+  // ---------- topic normalization ----------
+  function cleanTopic(t) {
+    return String(t || "").trim().replace(/\s+/g, " ");
+  }
+
+  function topicKey(t) {
+    var c = cleanTopic(t);
+    return c ? c.toLocaleLowerCase("tr-TR") : EMPTY_TOPIC_KEY;
+  }
+
+  function buildTopicLabelMap(questions) {
+    var map = {};
+    map[EMPTY_TOPIC_KEY] = "Konusuz";
+    var ordered = (questions || allQuestions).slice().sort(function (a, b) {
+      return (a.createdAt || 0) - (b.createdAt || 0);
+    });
+    ordered.forEach(function (q) {
+      var k = topicKey(q.topic);
+      if (k !== EMPTY_TOPIC_KEY && !map[k]) {
+        map[k] = cleanTopic(q.topic);
+      }
+    });
+    return map;
+  }
+
+  function displayTopicOf(q, labelMap) {
+    var map = labelMap || buildTopicLabelMap(allQuestions);
+    var k = topicKey(q && q.topic);
+    return map[k] || cleanTopic(q && q.topic) || "Konusuz";
   }
 
   // ---------- storage ----------
@@ -118,38 +152,101 @@
       document.getElementById("storageWarning").hidden = false;
       document.getElementById("btnAdd").disabled = true;
       document.getElementById("btnReview").disabled = true;
+      document.getElementById("btnNotebook").disabled = true;
     }
+    try {
+      history.replaceState({ subject: null, topicKey: null, overlay: null, depth: 0 }, "");
+    } catch (e) {}
     allQuestions = await loadQuestions();
     await render();
     wireStaticEvents();
   }
 
-  // ---------- render ----------
-  async function render() {
-    renderTabs();
-    renderStats();
-    await renderGrid();
+  // ---------- navigation & render ----------
+  function navigateTo(subject, tk) {
+    var nextSubj = subject || null;
+    var nextTk = tk || null;
+    if (nav.subject === nextSubj && nav.topicKey === nextTk) return;
+    nav.subject = nextSubj;
+    nav.topicKey = nextTk;
+    historyDepth++;
+    try {
+      history.pushState({ subject: nav.subject, topicKey: nav.topicKey, overlay: null, depth: historyDepth }, "");
+    } catch (e) {}
+    render("forward");
   }
 
-  function renderTabs() {
-    var subjects = [];
-    allQuestions.forEach(function (q) {
-      if (q.subject && subjects.indexOf(q.subject) === -1) subjects.push(q.subject);
-    });
-    var tabs = document.getElementById("subjectTabs");
-    var html = '<button class="tab' + (selectedSubject === "all" ? " active" : "") + '" data-subject="all" style="' + (selectedSubject === "all" ? "background:var(--ink);" : "") + '">Tümü</button>';
-    subjects.forEach(function (s) {
-      var active = selectedSubject === s;
-      var c = colorFor(s);
-      html += '<button class="tab' + (active ? " active" : "") + '" data-subject="' + esc(s) + '" style="' + (active ? "background:" + c + ";" : "") + '">' + esc(s) + "</button>";
-    });
-    tabs.innerHTML = html;
-    Array.prototype.forEach.call(tabs.querySelectorAll(".tab"), function (btn) {
-      btn.addEventListener("click", function () {
-        selectedSubject = btn.getAttribute("data-subject");
-        render();
+  function goBackLevel() {
+    history.back();
+  }
+
+  function validateNav() {
+    if (allQuestions.length === 0) {
+      nav.subject = null;
+      nav.topicKey = null;
+      return;
+    }
+    if (nav.subject !== null) {
+      var hasSubj = allQuestions.some(function (q) { return q.subject === nav.subject; });
+      if (!hasSubj) {
+        nav.subject = null;
+        nav.topicKey = null;
+        return;
+      }
+    }
+    if (nav.subject !== null && nav.topicKey !== null && nav.topicKey !== ALL_TOPICS_KEY) {
+      var hasTopic = allQuestions.some(function (q) {
+        return q.subject === nav.subject && topicKey(q.topic) === nav.topicKey;
       });
-    });
+      if (!hasTopic) {
+        nav.topicKey = null;
+      }
+    }
+  }
+
+  function renderNavHeader() {
+    var backBtn = document.getElementById("navBackBtn");
+    var titleEl = document.getElementById("navTitle");
+    var subEl = document.getElementById("navSubtitle");
+    var labelMap = buildTopicLabelMap(allQuestions);
+    var isSearching = searchTerm.trim().length > 0;
+
+    if (nav.subject === null && nav.topicKey === null) {
+      backBtn.hidden = true;
+      titleEl.textContent = "Hata Defterim";
+      titleEl.classList.remove("sublevel");
+      subEl.textContent = isSearching ? "Arama · Kapsam: Tüm Sorular" : "Kapsam: Tüm Sorular";
+    } else if (nav.subject !== null && nav.topicKey === null) {
+      backBtn.hidden = false;
+      backBtn.textContent = "‹ Dersler";
+      titleEl.textContent = nav.subject;
+      titleEl.classList.add("sublevel");
+      subEl.textContent = "Kapsam: " + nav.subject;
+    } else {
+      backBtn.hidden = false;
+      titleEl.classList.add("sublevel");
+      if (nav.subject === null) {
+        backBtn.textContent = "‹ Dersler";
+        titleEl.textContent = "Tüm Sorular";
+        subEl.textContent = "Kapsam: Tüm Sorular";
+      } else if (nav.topicKey === ALL_TOPICS_KEY) {
+        backBtn.textContent = "‹ " + nav.subject;
+        titleEl.textContent = "Tüm Sorular";
+        subEl.textContent = nav.subject + " › Tüm Sorular · Kapsam: " + nav.subject;
+      } else {
+        var tName = labelMap[nav.topicKey] || "Konusuz";
+        backBtn.textContent = "‹ " + nav.subject;
+        titleEl.textContent = tName;
+        subEl.textContent = nav.subject + " › " + tName + " · Kapsam: " + nav.subject + " › " + tName;
+      }
+    }
+  }
+
+  async function render(animDir) {
+    validateNav();
+    renderNavHeader();
+    renderStats();
+    await renderGrid(animDir);
   }
 
   function renderStats() {
@@ -160,18 +257,27 @@
     document.getElementById("statGood").textContent = good;
   }
 
-  function filteredQuestions() {
-    var term = searchTerm.trim().toLowerCase();
-    return allQuestions.filter(function (q) {
-      if (selectedSubject !== "all" && q.subject !== selectedSubject) return false;
-      if (!term) return true;
-      var hay = [q.subject, q.topic, q.note, q.tags, q.correctAnswer, q.myAnswer].join(" ").toLowerCase();
-      return hay.indexOf(term) !== -1;
+  function sortNewestFirst(arr) {
+    return (arr || []).slice().sort(function (a, b) {
+      return (b.createdAt || 0) - (a.createdAt || 0);
     });
   }
 
-  async function renderGrid() {
-    var list = filteredQuestions();
+  function filteredQuestions() {
+    var term = searchTerm.trim().toLocaleLowerCase("tr-TR");
+    var filtered = allQuestions.filter(function (q) {
+      if (term) {
+        var hay = [q.subject, q.topic, q.note, q.tags, q.correctAnswer, q.myAnswer].join(" ").toLocaleLowerCase("tr-TR");
+        return hay.indexOf(term) !== -1;
+      }
+      if (nav.subject !== null && q.subject !== nav.subject) return false;
+      if (nav.topicKey !== null && nav.topicKey !== ALL_TOPICS_KEY && topicKey(q.topic) !== nav.topicKey) return false;
+      return true;
+    });
+    return sortNewestFirst(filtered);
+  }
+
+  async function renderGrid(animDir) {
     var grid = document.getElementById("grid");
     var empty = document.getElementById("emptyState");
 
@@ -180,19 +286,162 @@
       empty.hidden = false;
       return;
     }
-    if (list.length === 0) {
-      grid.innerHTML = '<p class="hint" style="grid-column:1/-1;">Bu filtreyle eşleşen soru yok.</p>';
-      empty.hidden = true;
+    empty.hidden = true;
+
+    grid.classList.remove("anim-forward", "anim-back");
+    if (animDir === "forward" || animDir === "back") {
+      void grid.offsetWidth;
+      grid.classList.add(animDir === "forward" ? "anim-forward" : "anim-back");
+    }
+
+    var isSearching = searchTerm.trim().length > 0;
+    var labelMap = buildTopicLabelMap(allQuestions);
+
+    // Level 1: Subjects list (when not searching and at root level)
+    if (!isSearching && nav.subject === null && nav.topicKey === null) {
+      var subjMap = {};
+      var subjList = [];
+      allQuestions.forEach(function (q) {
+        var s = q.subject || "Ders yok";
+        if (!subjMap[s]) {
+          subjMap[s] = { subject: s, total: 0, need: 0, latest: 0 };
+          subjList.push(subjMap[s]);
+        }
+        subjMap[s].total++;
+        if (!q.mastered) subjMap[s].need++;
+        var ts = q.createdAt || 0;
+        if (ts > subjMap[s].latest) subjMap[s].latest = ts;
+      });
+      subjList.sort(function (a, b) {
+        return b.latest - a.latest;
+      });
+
+      var totalAll = allQuestions.length;
+      var needAll = allQuestions.filter(function (q) { return !q.mastered; }).length;
+      var rowsHtml =
+        '<button type="button" class="nav-row" data-nav-all-subjects="1">' +
+        '<span class="nav-row-left">' +
+        '<span class="subj-dot" style="background:var(--accent)"></span>' +
+        '<span class="nav-row-title">Tüm Sorular</span>' +
+        "</span>" +
+        '<span class="nav-row-right">' +
+        '<span class="nav-row-count">' + totalAll + " soru · " + needAll + " tekrar</span>" +
+        '<span class="nav-row-chevron">›</span>' +
+        "</span>" +
+        "</button>";
+
+      rowsHtml += subjList.map(function (item) {
+        return (
+          '<button type="button" class="nav-row" data-nav-subject="' + esc(item.subject) + '">' +
+          '<span class="nav-row-left">' +
+          '<span class="subj-dot" style="background:' + colorFor(item.subject) + '"></span>' +
+          '<span class="nav-row-title">' + esc(item.subject) + "</span>" +
+          "</span>" +
+          '<span class="nav-row-right">' +
+          '<span class="nav-row-count">' + item.total + " soru · " + item.need + " tekrar</span>" +
+          '<span class="nav-row-chevron">›</span>' +
+          "</span>" +
+          "</button>"
+        );
+      }).join("");
+
+      grid.innerHTML = '<div class="nav-list">' + rowsHtml + "</div>";
+
+      var allBtn = grid.querySelector("[data-nav-all-subjects]");
+      if (allBtn) {
+        allBtn.addEventListener("click", function () {
+          navigateTo(null, ALL_TOPICS_KEY);
+        });
+      }
+      Array.prototype.forEach.call(grid.querySelectorAll("[data-nav-subject]"), function (btn) {
+        btn.addEventListener("click", function () {
+          navigateTo(btn.getAttribute("data-nav-subject"), null);
+        });
+      });
       return;
     }
-    empty.hidden = true;
+
+    // Level 2: Topics list for selected subject (when not searching and topicKey === null)
+    if (!isSearching && nav.subject !== null && nav.topicKey === null) {
+      var subjQuestions = allQuestions.filter(function (q) { return q.subject === nav.subject; });
+      var topicMap = {};
+      var topicList = [];
+      subjQuestions.forEach(function (q) {
+        var k = topicKey(q.topic);
+        if (!topicMap[k]) {
+          topicMap[k] = {
+            topicKey: k,
+            label: labelMap[k] || displayTopicOf(q, labelMap),
+            total: 0,
+            need: 0,
+            latest: 0
+          };
+          topicList.push(topicMap[k]);
+        }
+        topicMap[k].total++;
+        if (!q.mastered) topicMap[k].need++;
+        var ts = q.createdAt || 0;
+        if (ts > topicMap[k].latest) topicMap[k].latest = ts;
+      });
+      topicList.sort(function (a, b) {
+        var aEmpty = a.topicKey === EMPTY_TOPIC_KEY;
+        var bEmpty = b.topicKey === EMPTY_TOPIC_KEY;
+        if (aEmpty && !bEmpty) return 1;
+        if (bEmpty && !aEmpty) return -1;
+        return b.latest - a.latest;
+      });
+
+      var totalSubj = subjQuestions.length;
+      var needSubj = subjQuestions.filter(function (q) { return !q.mastered; }).length;
+      var tRowsHtml =
+        '<button type="button" class="nav-row" data-nav-topic="' + ALL_TOPICS_KEY + '">' +
+        '<span class="nav-row-left">' +
+        '<span class="nav-row-title">Tüm Sorular</span>' +
+        "</span>" +
+        '<span class="nav-row-right">' +
+        '<span class="nav-row-count">' + totalSubj + " soru · " + needSubj + " tekrar</span>" +
+        '<span class="nav-row-chevron">›</span>' +
+        "</span>" +
+        "</button>";
+
+      tRowsHtml += topicList.map(function (tItem) {
+        return (
+          '<button type="button" class="nav-row" data-nav-topic="' + esc(tItem.topicKey) + '">' +
+          '<span class="nav-row-left">' +
+          '<span class="nav-row-title">' + esc(tItem.label) + "</span>" +
+          "</span>" +
+          '<span class="nav-row-right">' +
+          '<span class="nav-row-count">' + tItem.total + " soru · " + tItem.need + " tekrar</span>" +
+          '<span class="nav-row-chevron">›</span>' +
+          "</span>" +
+          "</button>"
+        );
+      }).join("");
+
+      grid.innerHTML = '<div class="nav-list">' + tRowsHtml + "</div>";
+
+      Array.prototype.forEach.call(grid.querySelectorAll("[data-nav-topic]"), function (btn) {
+        btn.addEventListener("click", function () {
+          navigateTo(nav.subject, btn.getAttribute("data-nav-topic"));
+        });
+      });
+      return;
+    }
+
+    // Level 3 or Search Results: Flat Question List (newest first)
+    var list = filteredQuestions();
+    if (list.length === 0) {
+      grid.innerHTML = '<p class="hint" style="grid-column:1/-1;">Bu filtreyle eşleşen soru yok.</p>';
+      return;
+    }
 
     var srcs = {};
     await Promise.all(list.map(async function (q) {
       if (q.photoFile) srcs[q.id] = await getPhotoSrc(q.photoFile);
     }));
 
-    grid.innerHTML = list.map(function (q) {
+    var showSubjTopicPair = isSearching || nav.subject === null;
+    var cardsHtml = list.map(function (q) {
       var src = srcs[q.id];
       var thumb = src
         ? '<img src="' + src + '" alt="">'
@@ -200,13 +449,15 @@
       var badge = q.mastered
         ? '<span class="badge good">Öğrenildi</span>'
         : '<span class="badge need">Tekrar Et</span>';
+      var tDisp = displayTopicOf(q, labelMap);
+      var topicLine = showSubjTopicPair ? ((q.subject || "Ders yok") + " · " + tDisp) : tDisp;
       return (
         '<div class="card">' +
         '<button class="card-btn" data-id="' + esc(q.id) + '">' +
         '<div class="thumb">' + thumb + "</div>" +
         '<div class="body">' +
         '<div class="tagrow"><span class="subj-chip" style="background:' + colorFor(q.subject) + '">' + esc(q.subject || "Ders yok") + "</span></div>" +
-        '<p class="topic">' + esc(q.topic || "Konu belirtilmedi") + "</p>" +
+        '<p class="topic">' + esc(topicLine) + "</p>" +
         '<p class="snippet">' + esc(q.note || "") + "</p>" +
         '<div class="meta"><span class="date mono">' + fmtDate(q.createdAt) + "</span>" + badge + "</div>" +
         "</div>" +
@@ -214,6 +465,8 @@
         "</div>"
       );
     }).join("");
+
+    grid.innerHTML = '<div class="card-list">' + cardsHtml + "</div>";
 
     Array.prototype.forEach.call(grid.querySelectorAll(".card-btn"), function (btn) {
       btn.addEventListener("click", function () {
@@ -237,18 +490,67 @@
   }
 
   function fillSubjectTopicLists() {
-    var subjSet = {}, topicSet = {};
+    var subjSet = {};
     allQuestions.forEach(function (q) {
       if (q.subject) subjSet[q.subject] = true;
-      if (q.topic) topicSet[q.topic] = true;
     });
-    document.getElementById("subjectList").innerHTML = Object.keys(subjSet).map(function (s) { return '<option value="' + esc(s) + '">'; }).join("");
-    document.getElementById("topicList").innerHTML = Object.keys(topicSet).map(function (t) { return '<option value="' + esc(t) + '">'; }).join("");
+    var subjListEl = document.getElementById("subjectList");
+    if (subjListEl) {
+      subjListEl.innerHTML = Object.keys(subjSet).map(function (s) { return '<option value="' + esc(s) + '">'; }).join("");
+    }
+  }
+
+  function renderTopicSuggestions() {
+    var box = document.getElementById("topicSuggestions");
+    if (!box) return;
+    var subjVal = document.getElementById("f_subject").value.trim();
+    var targetSubjKey = subjVal ? subjVal.toLocaleLowerCase("tr-TR") : (nav.subject ? nav.subject.toLocaleLowerCase("tr-TR") : "");
+
+    var labelMap = buildTopicLabelMap(allQuestions);
+    var counts = {};
+    allQuestions.forEach(function (q) {
+      if (targetSubjKey && String(q.subject || "").trim().toLocaleLowerCase("tr-TR") !== targetSubjKey) return;
+      var tk = topicKey(q.topic);
+      if (tk === EMPTY_TOPIC_KEY) return;
+      counts[tk] = (counts[tk] || 0) + 1;
+    });
+
+    var keys = Object.keys(counts).sort(function (a, b) {
+      return counts[b] - counts[a];
+    }).slice(0, 8);
+
+    if (keys.length === 0) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+
+    box.innerHTML = keys.map(function (k) {
+      var lbl = labelMap[k];
+      return '<button type="button" class="topic-sug-chip" data-topic-label="' + esc(lbl) + '">' + esc(lbl) + "</button>";
+    }).join("");
+    box.hidden = false;
+
+    Array.prototype.forEach.call(box.querySelectorAll(".topic-sug-chip"), function (btn) {
+      btn.addEventListener("click", function () {
+        document.getElementById("f_topic").value = btn.getAttribute("data-topic-label");
+      });
+    });
   }
 
   function openAddModal() {
     resetForm();
     fillSubjectTopicLists();
+    if (nav.subject !== null) {
+      document.getElementById("f_subject").value = nav.subject;
+    }
+    if (nav.topicKey !== null && nav.topicKey !== ALL_TOPICS_KEY && nav.topicKey !== EMPTY_TOPIC_KEY) {
+      var labelMap = buildTopicLabelMap(allQuestions);
+      if (labelMap[nav.topicKey]) {
+        document.getElementById("f_topic").value = labelMap[nav.topicKey];
+      }
+    }
+    renderTopicSuggestions();
     document.getElementById("formOverlay").hidden = false;
   }
 
@@ -265,6 +567,7 @@
     document.getElementById("f_correct").value = q.correctAnswer || "";
     document.getElementById("f_note").value = q.note || "";
     document.getElementById("f_tags").value = q.tags || "";
+    renderTopicSuggestions();
     if (q.photoFile) {
       var src = await getPhotoSrc(q.photoFile);
       if (src) {
@@ -276,6 +579,9 @@
   }
 
   function wireStaticEvents() {
+    document.getElementById("f_subject").addEventListener("input", renderTopicSuggestions);
+    document.getElementById("f_subject").addEventListener("change", renderTopicSuggestions);
+
     document.getElementById("photoInputBox").addEventListener("click", async function () {
       if (!Camera) {
         document.getElementById("photoText").textContent = "Kamera yalnızca Android uygulamasında çalışır";
@@ -312,6 +618,7 @@
       submitBtn.textContent = "Kaydediliyor…";
 
       try {
+        var editedQuestionId = editingId;
         var data = {
           subject: subject,
           topic: document.getElementById("f_topic").value.trim(),
@@ -336,9 +643,29 @@
           allQuestions.unshift(data);
         }
 
+        var currentNbQId = (!document.getElementById("notebookScreen").hidden && notebookList[notebookIdx])
+          ? notebookList[notebookIdx].id
+          : null;
+
         await saveQuestions(allQuestions);
         document.getElementById("formOverlay").hidden = true;
         await render();
+        if (!document.getElementById("notebookScreen").hidden) {
+          if (notebookCustomIds) {
+            notebookList = sortForNotebook(allQuestions.filter(function (q) {
+              return notebookCustomIds.indexOf(q.id) !== -1;
+            }));
+          } else {
+            notebookList = sortForNotebook(filteredQuestions());
+          }
+          var keepId = editedQuestionId || currentNbQId;
+          if (keepId) {
+            var newPos = notebookList.findIndex(function (q) { return q.id === keepId; });
+            if (newPos !== -1) notebookIdx = newPos;
+          }
+          if (notebookIdx >= notebookList.length) notebookIdx = Math.max(0, notebookList.length - 1);
+          await renderNotebookPage(null);
+        }
       } catch (err) {
         console.error(err);
         errEl.textContent = "Kaydedilemedi, tekrar dener misin?";
@@ -347,6 +674,38 @@
         submitBtn.disabled = false;
         submitBtn.textContent = editingId ? "Güncelle" : "Kaydet";
       }
+    });
+
+    document.getElementById("navBackBtn").addEventListener("click", goBackLevel);
+
+    window.addEventListener("popstate", function (e) {
+      var st = (e.state && typeof e.state === "object")
+        ? e.state
+        : { subject: null, topicKey: null, overlay: null, depth: 0 };
+      historyDepth = typeof st.depth === "number" ? st.depth : Math.max(0, historyDepth - 1);
+      var targetOverlay = st.overlay || null;
+
+      var zoomEl = document.getElementById("photoZoomOverlay");
+      if (zoomEl && !zoomEl.hidden && targetOverlay !== "zoom") {
+        closePhotoZoom(true);
+        if (targetOverlay === "notebook" || targetOverlay === "toc") return;
+      }
+
+      var tocEl = document.getElementById("nbTocOverlay");
+      if (tocEl && !tocEl.hidden && targetOverlay !== "toc") {
+        closeNotebookToc(true, null);
+        if (targetOverlay === "notebook") return;
+      }
+
+      var nbEl = document.getElementById("notebookScreen");
+      if (nbEl && !nbEl.hidden && targetOverlay !== "notebook" && targetOverlay !== "toc" && targetOverlay !== "zoom") {
+        closeNotebook(true);
+        return;
+      }
+
+      nav.subject = st.subject || null;
+      nav.topicKey = st.topicKey || null;
+      render("back");
     });
 
     document.getElementById("btnAdd").addEventListener("click", openAddModal);
@@ -362,12 +721,27 @@
       if (e.target === e.currentTarget) e.currentTarget.hidden = true;
     });
 
+    document.getElementById("nbTocOverlay").addEventListener("click", function (e) {
+      if (e.target === e.currentTarget) closeNotebookToc(false, null);
+    });
+
     document.getElementById("btnReview").addEventListener("click", startReview);
+    document.getElementById("btnNotebook").addEventListener("click", function () {
+      openNotebook(null);
+    });
 
     document.getElementById("searchBox").addEventListener("input", function (e) {
       searchTerm = e.target.value;
+      renderNavHeader();
       renderGrid();
     });
+  }
+
+  async function toggleQuestionMastered(q) {
+    q.mastered = !q.mastered;
+    q.lastReviewedAt = Date.now();
+    allQuestions = allQuestions.map(function (x) { return x.id === q.id ? q : x; });
+    await saveQuestions(allQuestions);
   }
 
   // ---------- detail ----------
@@ -376,9 +750,10 @@
     var src = q.photoFile ? await getPhotoSrc(q.photoFile) : null;
     var img = src ? '<img class="detail-img" src="' + src + '" alt="">' : "";
     var tags = (q.tags || "").split(",").map(function (t) { return t.trim(); }).filter(Boolean);
+    var tDisp = displayTopicOf(q);
     sheet.innerHTML =
       '<div class="sheet-head">' +
-      "<h2>" + esc(q.topic || q.subject || "Soru") + "</h2>" +
+      "<h2>" + esc(tDisp || q.subject || "Soru") + "</h2>" +
       '<button class="closex" id="detailClose" aria-label="Kapat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>' +
       "</div>" +
       img +
@@ -408,10 +783,7 @@
       openEditModal(q);
     });
     document.getElementById("detailToggleMaster").addEventListener("click", async function () {
-      q.mastered = !q.mastered;
-      q.lastReviewedAt = Date.now();
-      allQuestions = allQuestions.map(function (x) { return x.id === q.id ? q : x; });
-      await saveQuestions(allQuestions);
+      await toggleQuestionMastered(q);
       document.getElementById("detailOverlay").hidden = true;
       await render();
     });
@@ -439,7 +811,7 @@
   var reviewTotal = 0;
 
   function startReview() {
-    var pool = selectedSubject === "all" ? allQuestions : allQuestions.filter(function (q) { return q.subject === selectedSubject; });
+    var pool = filteredQuestions();
     var needsReview = pool.filter(function (q) { return !q.mastered; });
     if (needsReview.length === 0) {
       reviewQueue = [];
@@ -456,6 +828,7 @@
 
   function closeReview() {
     document.getElementById("reviewScreen").hidden = true;
+    render();
   }
 
   async function renderReviewCard() {
@@ -467,6 +840,7 @@
     var q = reviewQueue[reviewIdx];
     var src = q.photoFile ? await getPhotoSrc(q.photoFile) : null;
     var img = src ? '<img src="' + src + '" alt="">' : "";
+    var tDisp = displayTopicOf(q);
     screen.innerHTML =
       '<div class="review-head">' +
       '<button class="closex" id="reviewClose" aria-label="Kapat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>' +
@@ -477,7 +851,7 @@
       img +
       '<div class="review-sub">' +
       '<span class="subj-chip" style="background:' + colorFor(q.subject) + '">' + esc(q.subject || "") + "</span>" +
-      '<span class="disp" style="font-size:.95rem;">' + esc(q.topic || "") + "</span>" +
+      '<span class="disp" style="font-size:.95rem;">' + esc(tDisp) + "</span>" +
       "</div>" +
       '<div id="answerBox"></div>' +
       "</div>" +
@@ -514,6 +888,16 @@
 
   function renderReviewDone(hadQuestions) {
     var screen = document.getElementById("reviewScreen");
+    var title, hint;
+    if (reviewQueue.length > 0) {
+      var masteredCount = reviewQueue.filter(function (q) { return !!q.mastered; }).length;
+      var struggleCount = reviewQueue.length - masteredCount;
+      title = "Tur bitti: " + masteredCount + " öğrenildi, " + struggleCount + " tekrar listesinde";
+      hint = struggleCount > 0 ? "Kalan soruları istediğin zaman tekrar gözden geçirebilirsin." : "Bu turdaki tüm soruları öğrendin.";
+    } else {
+      title = hadQuestions ? "Tekrar edilecek soru kalmadı" : "Bu seçimde hiç soru yok";
+      hint = hadQuestions ? "Bu filtredeki tüm sorular öğrenildi olarak işaretli." : "Önce birkaç yanlış soru eklemelisin.";
+    }
     screen.innerHTML =
       '<div class="review-head">' +
       '<button class="closex" id="reviewClose2" aria-label="Kapat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>' +
@@ -522,13 +906,426 @@
       '<div class="review-body">' +
       '<div class="review-done">' +
       '<svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-      "<h2>" + (hadQuestions ? "Tekrar edilecek soru kalmadı" : "Bu seçimde hiç soru yok") + "</h2>" +
-      '<p class="hint">' + (hadQuestions ? "Bu filtredeki tüm sorular öğrenildi olarak işaretli." : "Önce birkaç yanlış soru eklemelisin.") + "</p>" +
+      "<h2>" + title + "</h2>" +
+      '<p class="hint">' + hint + "</p>" +
       '<button class="btn primary" id="btnBackToList">Listeye Dön</button>' +
       "</div>" +
       "</div>";
     document.getElementById("reviewClose2").addEventListener("click", closeReview);
     document.getElementById("btnBackToList").addEventListener("click", closeReview);
+  }
+
+  // ---------- notebook mode ----------
+  var notebookList = [];
+  var notebookIdx = 0;
+  var notebookCustomIds = null;
+  var pendingTocJumpIdx = null;
+
+  function getNotebookScopeTitle() {
+    var labelMap = buildTopicLabelMap(allQuestions);
+    if (searchTerm.trim().length > 0) {
+      return "Defter · Arama";
+    }
+    if (nav.subject === null) {
+      return "Defter · Tüm Sorular";
+    }
+    if (nav.topicKey === null || nav.topicKey === ALL_TOPICS_KEY) {
+      return "Defter · " + nav.subject;
+    }
+    var tName = labelMap[nav.topicKey] || "Konusuz";
+    return "Defter · " + nav.subject + " › " + tName;
+  }
+
+  function sortForNotebook(list) {
+    var arr = (list || []).slice();
+    var subjMax = {};
+    var groupMax = {};
+    arr.forEach(function (q) {
+      var s = q.subject || "Ders yok";
+      var tk = topicKey(q.topic);
+      var gk = s + "::" + tk;
+      var ts = q.createdAt || 0;
+      if (subjMax[s] === undefined || ts > subjMax[s]) {
+        subjMax[s] = ts;
+      }
+      if (groupMax[gk] === undefined || ts > groupMax[gk]) {
+        groupMax[gk] = ts;
+      }
+    });
+    return arr.sort(function (a, b) {
+      var sa = a.subject || "Ders yok";
+      var sb = b.subject || "Ders yok";
+      if (sa !== sb) {
+        var sDiff = (subjMax[sb] || 0) - (subjMax[sa] || 0);
+        if (sDiff !== 0) return sDiff;
+        return sa.localeCompare(sb, "tr-TR");
+      }
+      var ka = topicKey(a.topic);
+      var kb = topicKey(b.topic);
+      if (ka !== kb) {
+        if (ka === EMPTY_TOPIC_KEY) return 1;
+        if (kb === EMPTY_TOPIC_KEY) return -1;
+        var gkA = sa + "::" + ka;
+        var gkB = sb + "::" + kb;
+        var tDiff = (groupMax[gkB] || 0) - (groupMax[gkA] || 0);
+        if (tDiff !== 0) return tDiff;
+        return ka.localeCompare(kb, "tr-TR");
+      }
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+  }
+
+  function openNotebook(customQuestions) {
+    if (Array.isArray(customQuestions)) {
+      notebookCustomIds = customQuestions.map(function (q) { return q.id; });
+      notebookList = sortForNotebook(customQuestions);
+    } else {
+      notebookCustomIds = null;
+      notebookList = sortForNotebook(filteredQuestions());
+    }
+    notebookIdx = 0;
+    document.getElementById("notebookScreen").hidden = false;
+    var st = history.state || {};
+    if (st.overlay !== "notebook") {
+      historyDepth++;
+      try {
+        history.pushState({ subject: nav.subject, topicKey: nav.topicKey, overlay: "notebook", depth: historyDepth }, "");
+      } catch (e) {}
+    }
+    renderNotebookPage(null);
+  }
+
+  function closeNotebook(fromPopstate) {
+    if (!fromPopstate && history.state && (history.state.overlay === "notebook" || history.state.overlay === "toc" || history.state.overlay === "zoom")) {
+      history.back();
+      return;
+    }
+    document.getElementById("notebookScreen").hidden = true;
+    document.getElementById("nbTocOverlay").hidden = true;
+    closePhotoZoom(true);
+    render();
+  }
+
+  function closeNotebookToc(fromPopstate, jumpIdx) {
+    if (typeof jumpIdx === "number" && !isNaN(jumpIdx)) {
+      pendingTocJumpIdx = jumpIdx;
+    }
+    if (!fromPopstate && history.state && history.state.overlay === "toc") {
+      history.back();
+      return;
+    }
+    var overlay = document.getElementById("nbTocOverlay");
+    if (overlay) overlay.hidden = true;
+    if (pendingTocJumpIdx !== null) {
+      var target = pendingTocJumpIdx;
+      pendingTocJumpIdx = null;
+      if (target === notebookIdx) {
+        renderNotebookPage("prev");
+      } else {
+        goNotebookPage(target, target > notebookIdx ? "next" : "prev");
+      }
+    }
+  }
+
+  function openNotebookToc() {
+    var overlay = document.getElementById("nbTocOverlay");
+    var sheet = document.getElementById("nbTocSheet");
+    if (!overlay || !sheet || notebookList.length === 0) return;
+
+    var labelMap = buildTopicLabelMap(allQuestions);
+    var curQ = notebookList[notebookIdx];
+    var curSubj = curQ ? (curQ.subject || "Ders yok") : "";
+    var curTk = curQ ? topicKey(curQ.topic) : "";
+
+    var subjGroups = [];
+    var subjMap = {};
+    notebookList.forEach(function (q, idx) {
+      var sName = q.subject || "Ders yok";
+      var tk = topicKey(q.topic);
+      var tLabel = displayTopicOf(q, labelMap);
+      if (!subjMap[sName]) {
+        subjMap[sName] = {
+          subject: sName,
+          count: 0,
+          firstIdx: idx,
+          topics: []
+        };
+        subjGroups.push(subjMap[sName]);
+      }
+      var sg = subjMap[sName];
+      sg.count++;
+      var lastTopic = sg.topics.length ? sg.topics[sg.topics.length - 1] : null;
+      if (!lastTopic || lastTopic.topicKey !== tk) {
+        sg.topics.push({
+          topicKey: tk,
+          topicLabel: tLabel,
+          count: 1,
+          startPage: idx + 1,
+          endPage: idx + 1,
+          firstIdx: idx
+        });
+      } else {
+        lastTopic.count++;
+        lastTopic.endPage = idx + 1;
+      }
+    });
+
+    var isSingleTopicScope = (nav.subject !== null && nav.topicKey !== null && nav.topicKey !== ALL_TOPICS_KEY);
+    var sheetTitle = (nav.subject !== null) ? ("İçindekiler · " + nav.subject) : "İçindekiler";
+
+    var bodyHtml = "";
+    if (isSingleTopicScope && subjGroups.length === 1 && subjGroups[0].topics.length === 1) {
+      var tOnly = subjGroups[0].topics[0];
+      var pRangeOnly = tOnly.startPage === tOnly.endPage
+        ? ("s. " + tOnly.startPage)
+        : ("s. " + tOnly.startPage + "–" + tOnly.endPage);
+      bodyHtml =
+        '<div class="toc-list">' +
+        '<button type="button" class="toc-row active" data-first-idx="' + tOnly.firstIdx + '">' +
+        '<span class="toc-row-title">' + esc(tOnly.topicLabel) + "</span>" +
+        '<span class="toc-row-meta">' + tOnly.count + " soru · " + pRangeOnly + "</span>" +
+        "</button>" +
+        "</div>";
+    } else {
+      bodyHtml = '<div class="toc-sections">' + subjGroups.map(function (sg) {
+        var topicsHtml = sg.topics.map(function (t) {
+          var pageRange = t.startPage === t.endPage
+            ? ("s. " + t.startPage)
+            : ("s. " + t.startPage + "–" + t.endPage);
+          var isActive = (sg.subject === curSubj && t.topicKey === curTk);
+          return (
+            '<button type="button" class="toc-row' + (isActive ? " active" : "") + '" data-first-idx="' + t.firstIdx + '">' +
+            '<span class="toc-row-title">' + esc(t.topicLabel) + "</span>" +
+            '<span class="toc-row-meta">' + t.count + " soru · " + pageRange + "</span>" +
+            "</button>"
+          );
+        }).join("");
+
+        return (
+          '<div class="toc-section">' +
+          '<button type="button" class="toc-subj-head" data-first-idx="' + sg.firstIdx + '">' +
+          '<span class="toc-subj-left">' +
+          '<span class="subj-dot" style="background:' + colorFor(sg.subject) + '"></span>' +
+          '<span class="toc-subj-name">' + esc(sg.subject) + "</span>" +
+          "</span>" +
+          '<span class="toc-subj-count">' + sg.count + " soru</span>" +
+          "</button>" +
+          '<div class="toc-list">' + topicsHtml + "</div>" +
+          "</div>"
+        );
+      }).join("") + "</div>";
+    }
+
+    sheet.innerHTML =
+      '<div class="sheet-head">' +
+      "<h2>" + esc(sheetTitle) + "</h2>" +
+      '<button class="closex" id="nbTocClose" aria-label="Kapat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>' +
+      "</div>" +
+      bodyHtml;
+
+    overlay.hidden = false;
+    var st = history.state || {};
+    if (st.overlay !== "toc") {
+      historyDepth++;
+      try {
+        history.pushState({ subject: nav.subject, topicKey: nav.topicKey, overlay: "toc", depth: historyDepth }, "");
+      } catch (e) {}
+    }
+
+    document.getElementById("nbTocClose").addEventListener("click", function () {
+      closeNotebookToc(false, null);
+    });
+
+    Array.prototype.forEach.call(sheet.querySelectorAll(".toc-subj-head, .toc-row"), function (btn) {
+      btn.addEventListener("click", function () {
+        var target = parseInt(btn.getAttribute("data-first-idx"), 10);
+        closeNotebookToc(false, target);
+      });
+    });
+  }
+
+  function openPhotoZoom(src) {
+    if (!src) return;
+    var overlay = document.getElementById("photoZoomOverlay");
+    overlay.innerHTML =
+      '<button class="photo-zoom-close" id="photoZoomClose" aria-label="Kapat">' +
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>' +
+      "</button>" +
+      '<img src="' + src + '" alt="">';
+    overlay.hidden = false;
+    var st = history.state || {};
+    if (st.overlay !== "zoom") {
+      historyDepth++;
+      try {
+        history.pushState({ subject: nav.subject, topicKey: nav.topicKey, overlay: "zoom", depth: historyDepth }, "");
+      } catch (e) {}
+    }
+    overlay.onclick = function () { closePhotoZoom(false); };
+  }
+
+  function closePhotoZoom(fromPopstate) {
+    if (!fromPopstate && history.state && history.state.overlay === "zoom") {
+      history.back();
+      return;
+    }
+    var overlay = document.getElementById("photoZoomOverlay");
+    if (overlay) {
+      overlay.hidden = true;
+      overlay.innerHTML = "";
+    }
+  }
+
+  async function goNotebookPage(newIdx, dir) {
+    if (newIdx < 0 || newIdx >= notebookList.length || newIdx === notebookIdx) return;
+    notebookIdx = newIdx;
+    await renderNotebookPage(dir);
+  }
+
+  async function renderNotebookPage(animDir) {
+    var screen = document.getElementById("notebookScreen");
+    var scopeTitle = getNotebookScopeTitle();
+    if (notebookList.length === 0) {
+      screen.innerHTML =
+        '<div class="nb-head">' +
+        '<h2 class="nb-head-title">' + esc(scopeTitle) + "</h2>" +
+        '<button class="closex" id="nbCloseEmpty" aria-label="Kapat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>' +
+        "</div>" +
+        '<div class="review-body">' +
+        '<div class="review-done">' +
+        '<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="2" width="16" height="20" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 7h8M8 11h8M8 15h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' +
+        "<h2>Defter boş, önce soru ekle</h2>" +
+        '<p class="hint">Seçili filtrede gösterilecek soru bulunamadı.</p>' +
+        '<button class="btn primary" id="nbBackEmpty">Listeye Dön</button>' +
+        "</div>" +
+        "</div>";
+      document.getElementById("nbCloseEmpty").addEventListener("click", function () { closeNotebook(false); });
+      document.getElementById("nbBackEmpty").addEventListener("click", function () { closeNotebook(false); });
+      return;
+    }
+
+    var total = notebookList.length;
+    if (notebookIdx >= total) notebookIdx = total - 1;
+    var q = notebookList[notebookIdx];
+    var labelMap = buildTopicLabelMap(allQuestions);
+    var tDisp = displayTopicOf(q, labelMap);
+    var subjColor = colorFor(q.subject);
+    var src = q.photoFile ? await getPhotoSrc(q.photoFile) : null;
+    var tags = (Array.isArray(q.tags) ? q.tags.join(",") : String(q.tags || "")).split(",").map(function (t) { return t.trim(); }).filter(Boolean);
+    var animClass = animDir === "next" ? " anim-next" : (animDir === "prev" ? " anim-prev" : "");
+
+    var curSubj = q.subject || "";
+    var curTk = topicKey(q.topic);
+    var sameTopicPages = notebookList.filter(function (x) {
+      return (x.subject || "") === curSubj && topicKey(x.topic) === curTk;
+    });
+    var topicPos = sameTopicPages.findIndex(function (x) { return x.id === q.id; }) + 1;
+    var topicTotal = sameTopicPages.length;
+
+    screen.innerHTML =
+      '<div class="nb-head">' +
+      '<h2 class="nb-head-title">' + esc(scopeTitle) + "</h2>" +
+      '<div class="nb-head-actions">' +
+      '<button type="button" class="btn sm" id="nbTocBtn">İçindekiler</button>' +
+      '<button class="closex" id="nbClose" aria-label="Kapat"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>' +
+      "</div>" +
+      "</div>" +
+      '<div class="nb-stage">' +
+      '<div class="nb-sheet' + animClass + '" id="nbSheet">' +
+      '<div class="nb-edge-tab" style="background:' + subjColor + '"></div>' +
+      '<div class="nb-page-scroll">' +
+      '<div class="nb-topmeta">' +
+      '<div class="nb-path">' +
+      '<span class="subj-chip" style="background:' + subjColor + '">' + esc(q.subject || "Ders yok") + "</span>" +
+      '<span class="nb-path-sep">›</span>' +
+      '<button type="button" class="nb-topic" id="nbTopicJump" title="Konunun ilk sayfasına git">' + esc(tDisp) + "</button>" +
+      "</div>" +
+      '<div class="nb-topmeta-right">' +
+      '<span class="nb-date mono">' + fmtDate(q.createdAt) + "</span>" +
+      (q.mastered ? '<span class="badge good">Öğrenildi</span>' : "") +
+      "</div>" +
+      "</div>" +
+      (src ? '<img class="nb-photo" id="nbPhoto" src="' + src + '" alt="Soru fotoğrafı">' : "") +
+      '<div class="nb-fields">' +
+      '<div class="nb-ans-grid">' +
+      '<div class="nb-field"><label>Benim Cevabım</label><div class="val">' + esc(q.myAnswer || "—") + "</div></div>" +
+      '<div class="nb-field"><label>Doğru Cevap</label><div class="val">' + esc(q.correctAnswer || "—") + "</div></div>" +
+      "</div>" +
+      '<div class="nb-field"><label>Neden Yanlış Yaptım</label><div class="val">' + esc(q.note || "—") + "</div></div>" +
+      (tags.length ? '<div class="nb-field"><label>Etiketler</label><div class="val">' + tags.map(function (t) { return esc(t); }).join(" · ") + "</div></div>" : "") +
+      "</div>" +
+      "</div>" +
+      '<div class="nb-sheet-foot">' +
+      '<div class="nb-actions">' +
+      '<button class="btn sm" id="nbEdit">Düzenle</button>' +
+      '<button class="btn sm ' + (q.mastered ? "" : "good") + '" id="nbToggleMaster">' + (q.mastered ? "Tekrar Listesine Al" : "Öğrendim İşaretle") + "</button>" +
+      "</div>" +
+      '<button type="button" class="nb-pagenum-btn mono" id="nbPageNumBtn" title="İçindekiler">Sayfa ' + (notebookIdx + 1) + " / " + total + "</button>" +
+      "</div>" +
+      "</div>" +
+      "</div>" +
+      '<div class="nb-nav">' +
+      '<button class="nb-nav-btn" id="nbPrev" aria-label="Önceki sayfa"' + (notebookIdx === 0 ? " disabled" : "") + ">‹</button>" +
+      '<span class="nb-nav-topic mono">' + esc(tDisp) + " · " + topicPos + " / " + topicTotal + "</span>" +
+      '<button class="nb-nav-btn" id="nbNext" aria-label="Sonraki sayfa"' + (notebookIdx === total - 1 ? " disabled" : "") + ">›</button>" +
+      "</div>";
+
+    document.getElementById("nbClose").addEventListener("click", function () { closeNotebook(false); });
+    document.getElementById("nbTocBtn").addEventListener("click", openNotebookToc);
+    document.getElementById("nbPageNumBtn").addEventListener("click", openNotebookToc);
+    document.getElementById("nbPrev").addEventListener("click", function () { goNotebookPage(notebookIdx - 1, "prev"); });
+    document.getElementById("nbNext").addEventListener("click", function () { goNotebookPage(notebookIdx + 1, "next"); });
+
+    var topicJumpEl = document.getElementById("nbTopicJump");
+    if (topicJumpEl) {
+      topicJumpEl.addEventListener("click", function () {
+        var firstIdx = notebookList.findIndex(function (x) {
+          return (x.subject || "") === curSubj && topicKey(x.topic) === curTk;
+        });
+        if (firstIdx !== -1) {
+          if (firstIdx === notebookIdx) {
+            renderNotebookPage("prev");
+          } else {
+            goNotebookPage(firstIdx, firstIdx < notebookIdx ? "prev" : "next");
+          }
+        }
+      });
+    }
+
+    var photoEl = document.getElementById("nbPhoto");
+    if (photoEl) {
+      photoEl.addEventListener("click", function () { openPhotoZoom(src); });
+    }
+
+    document.getElementById("nbEdit").addEventListener("click", function () {
+      openEditModal(q);
+    });
+
+    document.getElementById("nbToggleMaster").addEventListener("click", async function () {
+      await toggleQuestionMastered(q);
+      await renderNotebookPage(null);
+    });
+
+    var sheetEl = document.getElementById("nbSheet");
+    var touchStartX = 0;
+    var touchStartY = 0;
+    sheetEl.addEventListener("touchstart", function (e) {
+      if (!e.touches || e.touches.length !== 1) return;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    sheetEl.addEventListener("touchend", function (e) {
+      if (!e.changedTouches || e.changedTouches.length !== 1) return;
+      var dx = e.changedTouches[0].clientX - touchStartX;
+      var dy = e.changedTouches[0].clientY - touchStartY;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+        if (dx < 0 && notebookIdx < total - 1) {
+          goNotebookPage(notebookIdx + 1, "next");
+        } else if (dx > 0 && notebookIdx > 0) {
+          goNotebookPage(notebookIdx - 1, "prev");
+        }
+      }
+    }, { passive: true });
   }
 
   document.addEventListener("DOMContentLoaded", init);
