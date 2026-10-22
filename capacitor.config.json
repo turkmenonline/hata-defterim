@@ -1,0 +1,8 @@
+{
+  "appId": "com.turkmenonline.hatadefterim",
+  "appName": "Hata Defterim",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}
