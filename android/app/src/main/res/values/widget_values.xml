@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_title">Hata Defterim</string>
+    <string name="widget_due_label">soru tekrar bekliyor</string>
+    <string name="widget_all_done">tekrar bekleyen soru yok</string>
+    <string name="widget_description">Tekrar zamanı gelen soru sayısını gösterir.</string>
+
+    <color name="widget_bg_color">#FFFFFF</color>
+    <color name="widget_text_primary">#111111</color>
+    <color name="widget_text_secondary">#6B6B70</color>
+    <color name="widget_accent">#007AFF</color>
+</resources>

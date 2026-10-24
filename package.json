@@ -1,6 +1,6 @@
 {
   "name": "hata-defterim",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sinava calisirken yanlis yapilan sorulari fotografla kaydedip tekrar etmek icin Android uygulamasi.",
   "private": true,
   "scripts": {
@@ -13,7 +13,9 @@
     "@capacitor/camera": "^6.0.2",
     "@capacitor/core": "^6.1.2",
     "@capacitor/filesystem": "^6.0.1",
-    "@capacitor/preferences": "^6.0.2"
+    "@capacitor/local-notifications": "^6.1.0",
+    "@capacitor/preferences": "^6.0.2",
+    "@capacitor/share": "^6.0.2"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2"
